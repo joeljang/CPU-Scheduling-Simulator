@@ -1,19 +1,21 @@
 #include <stdio.h>
 #include <time.h>
 
-#define PROCESS_NUM 50
-#define ALGORITHM_NUM 6
-#define TIME 1000
+#define PROCESS_NUM 7
+#define ALGORITHM_NUM 8
+#define TIME 200
 #define TQ 10
 
 #define FCFS 0
 #define SJF 1
 #define PRIORITY 2 
 #define RR 3
+#define PRIORITY_W_A 4
+#define LOTTERY 5
 
 #define MAX_CPUBURST 30
 #define MAX_IOBURST 5
-#define MAX_ARRIVAL 100
+#define MAX_ARRIVAL 30
 #define MAX_PRIORITY 30
 
 #define T 1
@@ -28,17 +30,21 @@ typedef struct myProcess {
     int IOburst;
     int arrivalTime;
     int priority;
+    int startTime; // IO start time
     int CPURemainTime;
     int IORemainTime;
     int waitingTime;
     int turnaroundTime;
 }myProcess;
 
+
+// Current process number in queues
 int cur_proc_num_JQ=0;
 int cur_proc_num_RQ=0;
 int cur_proc_num_WQ=0;
 int cur_proc_num_T=0;
 
+//metrics used during simulation and analysis process
 int timeConsumed = 0;
 int Computation_start = 0;
 int Computation_end = 0;
@@ -167,13 +173,14 @@ void clear_TQ() {
     int turnaroundTime;
 
 // PROCESS CREATION
-processPointer createProcess(int pid, int CPUburst, int IOburst, int arrivalTime, int priority, int CPURemainTime, int IORemainTime, int waitingTime, int turnaroundTime) {
+processPointer createProcess(int pid, int CPUburst, int IOburst, int arrivalTime, int priority, int startTime, int CPURemainTime, int IORemainTime, int waitingTime, int turnaroundTime) {
     processPointer newProcess = (processPointer)malloc(sizeof(myProcess));
     newProcess->pid = pid;
     newProcess->CPUburst = CPUburst;
     newProcess->IOburst = IOburst;
     newProcess->arrivalTime = arrivalTime;
     newProcess->priority = priority;
+    newProcess->startTime = startTime;
     newProcess->CPURemainTime = CPUburst;
     newProcess->IORemainTime = IOburst;
     newProcess->waitingTime = 0;
@@ -189,19 +196,25 @@ void createProcesses() {
     int priority;
     int i;
     int randomio;
+    int start;
+    int difference;
 	for(i=0;i<PROCESS_NUM; i++) {
-		//CPU burst : 1~20
+		//CPU burst : 3~32
 		//IO burst : 1~10
-		cpu=rand()%MAX_CPUBURST + 1;
-        randomio=rand()%10;
+		cpu=rand()%MAX_CPUBURST + 3;
+        randomio=rand()%5;
         io=0;
 		arrival = rand()%MAX_ARRIVAL;
 		priority = rand()%MAX_PRIORITY;
         if(randomio==0) {
             io=rand()%MAX_IOBURST + 1;
-            cpu=0;
         }
-		jobQueue[i] = createProcess(i+1, cpu, io, arrival, priority,0,0,0,0);
+        start=(rand()%(cpu)+2);
+        if(start>=cpu) {
+            difference = start - cpu;
+            start = start - difference;
+        }
+		jobQueue[i] = createProcess(i+1, cpu, io, arrival, priority, start,0,0,0,0);
 	}
 	//sorting using insertion sort 
 	processPointer temp;
@@ -222,7 +235,7 @@ void createProcesses() {
 void createClone_JQ() {
     init_CJQ();
     for (int i=0;i<PROCESS_NUM;i++) {
-        cJobQueue[i] = createProcess(jobQueue[i]->pid, jobQueue[i]->CPUburst, jobQueue[i]->IOburst, jobQueue[i]->arrivalTime, jobQueue[i]->priority, jobQueue[i]->CPURemainTime, jobQueue[i]->IORemainTime, jobQueue[i]->waitingTime, jobQueue[i]->turnaroundTime);
+        cJobQueue[i] = createProcess(jobQueue[i]->pid, jobQueue[i]->CPUburst, jobQueue[i]->IOburst, jobQueue[i]->arrivalTime, jobQueue[i]->priority, jobQueue[i]->startTime, jobQueue[i]->CPURemainTime, jobQueue[i]->IORemainTime, jobQueue[i]->waitingTime, jobQueue[i]->turnaroundTime);
     }
     cur_proc_num_JQ = PROCESS_NUM;
 }
@@ -462,6 +475,58 @@ processPointer RR_a() {
         }
 }
 
+processPointer Priority_with_age() {
+    processPointer importantJob = readyQueue[0];
+	
+	if(importantJob != NULL) { 
+        for (int i=0;i<cur_proc_num_RQ;i++) {
+            if ((readyQueue[i]->waitingTime)%10 == 1) { // Aging mechanism
+                readyQueue[i]->priority = readyQueue[i]->priority - 5;
+            }
+            if (readyQueue[i]-> priority <= importantJob->priority) {
+                if(readyQueue[i]->priority == importantJob->priority) { //If they have the same priority, the process that arrived first is executed
+                    if (readyQueue[i]->arrivalTime < importantJob->arrivalTime)
+						importantJob = readyQueue[i];
+                } else {
+                    importantJob = readyQueue[i];
+                }
+            }
+        }
+		
+		if(runningProcess != NULL) { // If there is a process that is running already
+				return runningProcess;
+        	} else {
+				return removeFrom_RQ(importantJob);
+			}
+	}else { // ready Queue is empty!
+		return runningProcess;
+	}
+}
+
+processPointer Lottery() {
+    int luckynumber;
+    processPointer luckyJob = NULL;
+
+    if (cur_proc_num_RQ==0) {
+        if (runningProcess==NULL) {
+            return NULL;
+        } else {
+            return runningProcess;
+        }
+    } else {
+        luckynumber = rand()%(cur_proc_num_RQ+2); //Give an advantage to the running process considering the overhead of context swtiching.
+        if (luckynumber>(cur_proc_num_RQ-1)) {
+            return runningProcess;
+        } else {
+            luckyJob = readyQueue[luckynumber];
+            if(runningProcess!=NULL) {
+                insertInto_RQ(runningProcess);
+            }
+            return removeFrom_RQ(luckyJob);
+        }
+    }
+}
+
 processPointer schedule(int alg, int preemptive) { //Processes with the scheudling algorithm in the given time
 	processPointer selectedProcess = NULL;
     
@@ -478,12 +543,17 @@ processPointer schedule(int alg, int preemptive) { //Processes with the scheudli
         case RR:
         	selectedProcess = RR_a();
         	break;
+        case PRIORITY_W_A:
+        	selectedProcess = Priority_with_age();
+        	break;
+        case LOTTERY:
+        	selectedProcess = Lottery();
+        	break;
         default:
             return NULL;
     }
 
     if (selectedProcess==NULL) {
-        printf("returning a null for selected process..\n");
         return NULL;
     } else{
         return selectedProcess;
@@ -527,35 +597,44 @@ void simulate(int amount, int alg, int preemptive) {
 			waitingQueue[i]->IORemainTime--;
 			
 			if(waitingQueue[i]->IORemainTime <= 0 ) { //If finished IO time
-				printf("(pid: %d) -> IO complete, ", waitingQueue[i]->pid);
+				printf("(pid: %d) -> IO complete, \n", waitingQueue[i]->pid);
 				temporary = removeFrom_WQ(waitingQueue[i--]); //Remove from the waiting Queue
-                insertInto_T(temporary);
+                insertInto_RQ(temporary);
 				//print_WQ();
 			}
 		}
 	}
-	if(runningProcess->IORemainTime > 0) { //If the process needs IO operation, send it to the waiting queue.
-				insertInto_WQ(runningProcess);
-				runningProcess = NULL;
-				printf("-> IO request\n");
-	}
 
     if(runningProcess != NULL) { //Execute the running process
+        
+        if(timeConsumed==runningProcess->startTime) { //If the process needs IO operation, send it to the waiting queue.
+            if(runningProcess->IORemainTime > 0) {
+                insertInto_WQ(runningProcess);
+                runningProcess = NULL;
+                printf("-> IO request\n");
+                printf("idle\n");
+    	        Computation_idle = Computation_idle + 1;
+                return;
+            }
+        }
+        
         runningProcess->CPURemainTime--;
         runningProcess->turnaroundTime++;
         timeConsumed++;
         printf("(pid: %d) -> running ",runningProcess->pid);
-        
         if(runningProcess->CPURemainTime <= 0) { // If execution is finished, send it to the terminated queue.
 			insertInto_T(runningProcess);
 			runningProcess = NULL;
 			printf("-> terminated");
 		}
         printf("\n");
+        
     } else { //If there is no process running..
     	printf("idle\n");
+        printf("cur_proc_num_RQ: %d\n", cur_proc_num_RQ);
     	Computation_idle = Computation_idle + 1;
 	}
+    
 }
 
 void analyze(int alg, int preemptive) {
@@ -583,17 +662,6 @@ void analyze(int alg, int preemptive) {
 		printf("Average turnaround time: %d\n",turnaround_sum/cur_proc_num_T);
 	}	
 	printf("Completed: %d\n",cur_proc_num_T);
-
-typedef struct evaluation {
-    int alg;
-    int preemptive;
-    int startTime;
-    int endTime;
-    int avg_waitingTime;
-    int avg_turnaroundTime;
-    int CPU_util;
-    int completed;
-}evaluation;
 
 	if(cur_proc_num_T != 0) {
 		evaluationPointer newEval = (evaluationPointer)malloc(sizeof(struct evaluation));
@@ -640,6 +708,12 @@ void evaluate() {
         	else printf("<Non-preemptive ");
         	puts("Priority Algorithm>");
         	break;
+        case PRIORITY_W_A:
+        	puts("<Priority With Aging Algorithm>");
+        	break;
+        case LOTTERY:
+        	puts("<LOTTERY Algorithm>");
+        	break;
         default:
         return;
 		}
@@ -654,15 +728,47 @@ void evaluate() {
 
 
 void startSimulation(int alg, int preemptive, int count) {
-    printf("cur_proc_num_JQ: %d\n", cur_proc_num_JQ);
     createClone_JQ();
     
-    printf("WTF IS THIS...EXAMINING THE CLONE READY QUEUE STATUS\n");
+    switch(alg) {
+        case FCFS:
+            printf("***********LETS GET FCFS STARTED~~************\n");
+            break;
+        case SJF:
+        	if (preemptive) {
+                printf("***********LETS GET PREEMPTIVE SJF STARTED~~************\n");
+            } else {
+                printf("***********LETS GET SJF STARTED~~************\n");
+            }
+        	break;
+        case PRIORITY:
+            if (preemptive) {
+                printf("***********LETS GET PREEMPTIVE PRIORITY STARTED~~************\n");
+            } else {
+                printf("***********LETS GET PRIORITY STARTED~~************\n");
+            }
+        	break;
+        case RR:
+            printf("***********LETS GET RR STARTED~~************\n");
+        	break;
+        case PRIORITY_W_A:
+            printf("***********LETS GET PRIORITY WITH AGING STARTED~~************\n");
+        	break;
+        case LOTTERY:
+            printf("***********LETS GET LOTTERY STARTED~~************\n");
+        	break;
+        default:
+            printf("WHUUT.....\n");
+    }
+    
+    printf("EXAMINING THE CLONE READY QUEUE STATUS\n");
     for (int i=0;i<cur_proc_num_JQ;i++) {
-        printf("ARRIVAL TIME: %d\n", cJobQueue[i]->arrivalTime);
-        printf("PID: %d\n", cJobQueue[i]->pid);
-        printf("CPUtime: %d\n", cJobQueue[i]->CPUburst);
-        printf("IOTIME: %d\n", cJobQueue[i]->IOburst);
+        printf("ARRIVAL TIME: %d ", cJobQueue[i]->arrivalTime);
+        printf("PID: %d ", cJobQueue[i]->pid);
+        printf("CPUtime: %d ", cJobQueue[i]->CPUburst);
+        printf("IOTIME: %d ", cJobQueue[i]->IOburst);
+        printf("PRIORITY: %d ", cJobQueue[i]->priority);
+        printf("STARTTIME: %d\n", cJobQueue[i]->startTime);
     }
     
     int first_proc_num = cur_proc_num_JQ;
@@ -672,8 +778,10 @@ void startSimulation(int alg, int preemptive, int count) {
 		puts("<error> Simulation failed. Process doesn't exist in the job queue");
 		return;
 	}
+
     printf("LET'S GET ITTTT!\n");
     Computation_start = cJobQueue[0]->arrivalTime;
+    printf("ARRIVAL TIME: %d\n", cJobQueue[0]->arrivalTime);
 	Computation_idle = 0;
 	for(i=0;i<count;i++) {
         if(i < Computation_start) {
@@ -724,6 +832,8 @@ int main() {
     startSimulation(PRIORITY,F,TIME);
     startSimulation(PRIORITY,T,TIME);
     startSimulation(RR,F,TIME);
+    startSimulation(PRIORITY_W_A,F,TIME);
+    startSimulation(LOTTERY,F,TIME);
     evaluate();
 
     clear_JQ();
